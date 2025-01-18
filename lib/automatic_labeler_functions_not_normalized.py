@@ -21,50 +21,9 @@ class Comparing:
         self.distance_threshold = distance_threshold
 
     def calc_matches(self):
-        # Garantir que Q_df e T_df sejam 1-dimensionais
-        if isinstance(self.Q_df, pd.DataFrame):
-            if self.Q_df.shape[1] != 1:
-                raise ValueError("Q_df deve conter apenas uma coluna para a análise com stumpy.mass.")
-            self.Q_df = self.Q_df.iloc[:, 0]  # Converter para Série
-        if isinstance(self.T_df, pd.DataFrame):
-            if self.T_df.shape[1] != 1:
-                raise ValueError("T_df deve conter apenas uma coluna para a análise com stumpy.mass.")
-            self.T_df = self.T_df.iloc[:, 0]  # Converter para Série
-
-        # Validar os dados
-        if self.Q_df.empty or self.T_df.empty:
-            raise ValueError("Q_df ou T_df estão vazios. Verifique os dados de entrada.")
-        if self.Q_df.isnull().values.any() or self.T_df.isnull().values.any():
-            raise ValueError("Q_df ou T_df contêm valores NaN. Remova ou substitua os valores ausentes.")
-
-        # Depuração: Verificar as dimensões e o conteúdo das séries
-        print(f"Shape de Q_df: {self.Q_df.shape}, Shape de T_df: {self.T_df.shape}")
-        print(f"Q_df head:\n{self.Q_df.head()}")
-        print(f"T_df head:\n{self.T_df.head()}")
-
-        # Ajustar max_distance para evitar valores negativos
-        try:
-            self.matches_idxs = stumpy.match(
-                self.Q_df,
-                self.T_df,
-                max_distance=lambda D: max(np.mean(D) - self.distance_threshold * np.std(D), 0)
-            )
-
-            self.all_matches_idxs = stumpy.match(
-                self.Q_df,
-                self.T_df,
-                max_distance=lambda D: max(9e100, np.min(D))
-            )
-            
-            self.all_mass_idxs = stumpy.mass(self.Q_df, self.T_df)
-
-        except ValueError as e:
-            print(f"Erro durante o cálculo: {e}")
-            raise
-
-
-
-
+        self.matches_idxs = stumpy.match(self.Q_df, self.T_df, max_distance=lambda D: max(np.mean(D) - self.distance_threshold * np.std(D), np.min(D)))
+        self.all_matches_idxs = stumpy.match(self.Q_df, self.T_df, max_distance=lambda D: max(9e100, np.min(D)))
+        self.all_mass_idxs = stumpy.mass(self.Q_df, self.T_df)
 
 def get_euclidean_distance(target, matrix):
     for subarray in matrix:
@@ -72,16 +31,7 @@ def get_euclidean_distance(target, matrix):
             return subarray[0]
     return None
 
-def label_current_series(
-    current_path_location, 
-    RESUME_DT, 
-    selected_measures_in_frame_interval, 
-    dict_label_parameters, 
-    seed_name, 
-    LABELED_FILE_NAME='VD_LABELED_L0.CSV', 
-    distance_threshold=2, 
-    frame_threshold=3
-):
+def label_current_series(current_path_location, RESUME_DT, selected_measures_in_frame_interval, dict_label_parameters, seed_name, LABELED_FILE_NAME='VD_LABELED_L0.CSV', distance_threshold=2, frame_threshold=3):
     VD_MEASURE_DT = pd.read_csv(current_path_location)
     
     if 'Unnamed: 0' in VD_MEASURE_DT.columns:
@@ -97,46 +47,32 @@ def label_current_series(
     all_matches_memory = []
     all_mass_memory = []
     
-    # Certifique-se de que selected_measures_in_frame_interval seja um DataFrame
-    selected_measures_in_frame_interval = pd.DataFrame(selected_measures_in_frame_interval)
-
-    # Iterar pelas colunas da série de referência
-    for step, column in enumerate(selected_measures_in_frame_interval.columns):
-        comp_object = Comparing(
-            selected_measures_in_frame_interval[column],
-            T_df[column],
-            distance_threshold
-        )
+    for step in range(0, len(selected_measures_in_frame_interval.columns)):
+        comp_object = Comparing(selected_measures_in_frame_interval[dict_label_parameters['reference_measures'][step]], T_df[dict_label_parameters['reference_measures'][step]], distance_threshold)
         comp_object.calc_matches()
 
         matches_memory.append(comp_object.matches_idxs)
         all_mass_memory.append(comp_object.all_mass_idxs)
+        all_matches_memory.append(comp_object.all_matches_idxs)
 
+        comp_object.measure_name = dict_label_parameters['reference_measures'][step]
+        object_list.append(comp_object)
+        
+        # Count the number of rows
+        temp_row.at[0, dict_label_parameters['reference_measures'][step]] = int(len(comp_object.matches_idxs))
+        
     # Apply the matching filter
     all_index = []
     for c in object_list:  
         all_index.append(c.matches_idxs[:, 1])
     
-    # Aplicar o filtro por coincidência de índices
+    # Filter by coincidence from a distance threshold between the position of each indexes
     aux = all_index.copy()
-
-    # Verificar se aux está vazio
-    if not aux:
-        print(f"Nenhuma correspondência inicial encontrada em {current_path_location}.")
-        return None  # Retorna None em vez de usar continue
-
-    # Chamar find_all_matches com verificação
     filter_index = find_all_matches(aux, frame_threshold)
+    
+    filter_index_list=list(filter_index[0])
 
-    # Verificar se filter_index está vazio
-    if not filter_index or not isinstance(filter_index, list) or len(filter_index) == 0 or not filter_index[0]:
-        print(f"Nenhuma correspondência encontrada em filter_index para {current_path_location}.")
-        return None  # Retorna None em vez de usar continue
-
-    # Se chegamos aqui, filter_index_list está definido
-    filter_index_list = list(filter_index[0])
-
-    # Processar os índices encontrados
+    # Fix the subseries index by the original frame index (frame_seq)
     filter_index_begin = []
     for idx_tuple in filter_index_list:
         filter_index_begin.append(idx_tuple)
@@ -146,10 +82,9 @@ def label_current_series(
         idx_frame_seq = VD_MEASURE_DT.loc[idx, 'frame_seq']
         for c in object_list:
             ed = get_euclidean_distance(idx, c.matches_idxs)
-            if ed is not None:
-                break
+            if ed != None: break
         idxs_match_frame_seq.append([idx_frame_seq, ed])
-
+            
     # Test if the Labeled File was already created
     VD_LABEL_PATH = (os.path.join(os.path.dirname(current_path_location), LABELED_FILE_NAME))
     test = os.path.exists(VD_LABEL_PATH)
@@ -176,24 +111,16 @@ def label_current_series(
     # Adds information to label the frames.
     for label_idx in idxs_match_frame_seq:
         init_lab = label_idx[0]
-        end_lab = init_lab + len(selected_measures_in_frame_interval) - 1
+        end_lab = init_lab+len(selected_measures_in_frame_interval)-1
         e_distance = label_idx[1]
         FRAMES_DT = VD_LABELED_DT.query(f'frame_seq >= {init_lab} & frame_seq <= {end_lab}')
         occurrences_len.append(len(FRAMES_DT))
         
         # if there is not a discontinuity in the interval of frames
-        if not end_lab in VD_LABELED_DT.index:
+        if not FRAMES_DT['gap'].any()==1 and end_lab in VD_LABELED_DT.index:
             
             # In cases that the missing frames are in the end of interval
-            VD_LABELED_DT, removed_series = UPDATE_LABEL_DF(
-                init_lab, 
-                end_lab, 
-                dict_label_parameters['label_name'], 
-                dict_label_parameters['reference_measures'], 
-                VD_LABELED_DT, 
-                seed_name, 
-                e_distance
-            )
+            VD_LABELED_DT, removed_series = UPDATE_LABEL_DF(init_lab, end_lab, dict_label_parameters['label_name'], dict_label_parameters['reference_measures'], VD_LABELED_DT, seed_name, e_distance)
             temp_row['final'] -= removed_series
         else:
             gap_occurrences += 1
@@ -206,7 +133,6 @@ def label_current_series(
     VD_LABELED_DT.to_csv(VD_LABEL_PATH)
 
     return RESUME_DT, matches_memory, all_matches_memory, all_mass_memory, idxs_match_frame_seq, occurrences_len
-
 
 def UPDATE_LABEL_DF(init_lab, end_lab, label_name_in, label_measure_in, data_frame_in, seed_name, matches_idxs):
     # Extract subset from 'label_measures' for specified interval
@@ -283,14 +209,17 @@ def find_close_values(idxs, threshold):
     return close_values
 
 def find_all_matches(list_of_index, threshold):
-    if not list_of_index or len(list_of_index) <= 1:
-        print("Poucos índices para calcular correspondências. Retornando lista vazia.")
-        return []
-    else:
-        list_aux = []
+    n = len(list_of_index)
+    list_aux = []
+    
+    if n <= 1:  
+        return list_of_index
+    else: 
+        # Select the first and second one on the similarity search
         list_aux.append(list_of_index.pop(0))
         list_aux.append(list_of_index.pop(0))
+
         result = find_close_values(list_aux, threshold)
         list_of_index.insert(0, result)
+        
         return find_all_matches(list_of_index, threshold)
-
