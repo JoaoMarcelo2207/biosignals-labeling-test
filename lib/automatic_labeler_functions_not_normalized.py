@@ -21,15 +21,43 @@ class Comparing:
         self.distance_threshold = distance_threshold
 
     def calc_matches(self):
-        self.matches_idxs = stumpy.match(self.Q_df, self.T_df, max_distance=lambda D: max(np.mean(D) - self.distance_threshold * np.std(D), np.min(D)))
-        self.all_matches_idxs = stumpy.match(self.Q_df, self.T_df, max_distance=lambda D: max(9e100, np.min(D)))
-        self.all_mass_idxs = stumpy.mass(self.Q_df, self.T_df)
+        print(f"Tamanho de Q_df: {len(self.Q_df)}, Tamanho de T_df: {len(self.T_df)}")
+        if len(self.Q_df) < 2 or len(self.T_df) < 2:
+            raise ValueError("As séries precisam conter mais de 1 elemento.")
+
+        # Tamanho da janela
+        m = min(len(self.Q_df), len(self.T_df), 11)
+        if m < 2:
+            raise ValueError("Tamanho da janela deve ser pelo menos 2.")
+
+        # Matriz de perfil usando stumpy.aamp
+        profile = stumpy.aamp(self.T_df, m)
+
+        # Correspondências e índices
+        self.matches_idxs = profile[:, 0]  # Índices das subsequências
+        self.all_distances = profile[:, 1]  # Distâncias mínimas
+
+
+
+
+
 
 def get_euclidean_distance(target, matrix):
-    for subarray in matrix:
-        if target in subarray:
-            return subarray[0]
+    # Verifique se `matrix` é iterável (lista ou array)
+    if isinstance(matrix, (list, np.ndarray)):
+        for subarray in matrix:
+            # Verifique se `subarray` também é iterável
+            if isinstance(subarray, (list, np.ndarray)):
+                if target in subarray:
+                    return subarray[0]
+            # Caso contrário, compare diretamente
+            elif target == subarray:
+                return subarray
+    # Caso `matrix` seja escalar, compare diretamente
+    elif isinstance(matrix, (float, int)):
+        return matrix if target == matrix else None
     return None
+
 
 def label_current_series(current_path_location, RESUME_DT, selected_measures_in_frame_interval, dict_label_parameters, seed_name, LABELED_FILE_NAME='VD_LABELED_L0.CSV', distance_threshold=2, frame_threshold=3):
     VD_MEASURE_DT = pd.read_csv(current_path_location)
@@ -59,31 +87,41 @@ def label_current_series(current_path_location, RESUME_DT, selected_measures_in_
         object_list.append(comp_object)
         
         # Count the number of rows
-        temp_row.at[0, dict_label_parameters['reference_measures'][step]] = int(len(comp_object.matches_idxs))
+        # Lógica para lidar com um único valor
+        temp_row.at[0, dict_label_parameters['reference_measures'][step]] = 1 if comp_object.matches_idxs is not None else 0
+
         
     # Apply the matching filter
     all_index = []
-    for c in object_list:  
-        all_index.append(c.matches_idxs[:, 1])
+    for c in object_list:
+        if isinstance(c.matches_idxs, np.ndarray):
+            all_index.append(c.matches_idxs)  # Adiciona o array 1D
+        else:
+            all_index.append([c.matches_idxs])  # Caso seja um valor escalar, encapsula em lista
+
     
     # Filter by coincidence from a distance threshold between the position of each indexes
     aux = all_index.copy()
     filter_index = find_all_matches(aux, frame_threshold)
     
-    filter_index_list=list(filter_index[0])
+    filter_index_list = list(filter_index[0])  # Gera a lista inicial
 
-    # Fix the subseries index by the original frame index (frame_seq)
-    filter_index_begin = []
-    for idx_tuple in filter_index_list:
-        filter_index_begin.append(idx_tuple)
+    # Inicialize `filter_index_begin` com índices válidos
+    filter_index_begin = [int(idx) for idx in filter_index_list if idx in VD_MEASURE_DT.index]
 
+    # Continue com a lógica existente
     idxs_match_frame_seq = []
     for idx in filter_index_begin:
         idx_frame_seq = VD_MEASURE_DT.loc[idx, 'frame_seq']
         for c in object_list:
-            ed = get_euclidean_distance(idx, c.matches_idxs)
-            if ed != None: break
+            if isinstance(c.matches_idxs, (float, int)):
+                ed = c.matches_idxs if idx == c.matches_idxs else None
+            else:
+                print(f"Tipo de c.matches_idxs: {type(c.matches_idxs)}, valor: {c.matches_idxs}")
+                ed = get_euclidean_distance(idx, c.matches_idxs)
         idxs_match_frame_seq.append([idx_frame_seq, ed])
+
+
             
     # Test if the Labeled File was already created
     VD_LABEL_PATH = (os.path.join(os.path.dirname(current_path_location), LABELED_FILE_NAME))
@@ -117,7 +155,7 @@ def label_current_series(current_path_location, RESUME_DT, selected_measures_in_
         occurrences_len.append(len(FRAMES_DT))
         
         # if there is not a discontinuity in the interval of frames
-        if not FRAMES_DT['gap'].any()==1 and end_lab in VD_LABELED_DT.index:
+        if not FRAMES_DT.get('gap', pd.Series([0] * len(FRAMES_DT))).any() == 1 and end_lab in VD_LABELED_DT.index:
             
             # In cases that the missing frames are in the end of interval
             VD_LABELED_DT, removed_series = UPDATE_LABEL_DF(init_lab, end_lab, dict_label_parameters['label_name'], dict_label_parameters['reference_measures'], VD_LABELED_DT, seed_name, e_distance)
@@ -135,59 +173,55 @@ def label_current_series(current_path_location, RESUME_DT, selected_measures_in_
     return RESUME_DT, matches_memory, all_matches_memory, all_mass_memory, idxs_match_frame_seq, occurrences_len
 
 def UPDATE_LABEL_DF(init_lab, end_lab, label_name_in, label_measure_in, data_frame_in, seed_name, matches_idxs):
-    # Extract subset from 'label_measures' for specified interval
+    # Extrair subconjunto de 'label_measures' para o intervalo especificado
     subset_df = data_frame_in.loc[init_lab:end_lab, 'label_measures']
 
-    # Convert strings to dictionaries and filter out any empty dictionaries (`{}`)
+    # Converter strings em dicionários e filtrar dicionários vazios (`{}`)
     non_empty_label_measures = subset_df[subset_df != '{}']
-    
-    # Convert the dict into a list
     non_empty_label_measures_list = list(non_empty_label_measures)
-    
-    # Convert the list into a set to remove duplicated items
-    unique_label_measures = set(non_empty_label_measures_list)
 
-    # Re-convert the set into a list to be able to iterate it
+    # Remover duplicatas convertendo para um conjunto, depois reconverter para lista
+    unique_label_measures = set(non_empty_label_measures_list)
     unique_label_measures_list = list(unique_label_measures)
-    
-    # Verify if all the euclidean distances on the current dataset are bigger than the euclidean distance arriving
-    # If there is any euclidean distance smaller than the occurrence arriving, it WONT be saved.
+
+    # Verificar se todas as distâncias Euclidianas no conjunto atual são maiores que a distância recebida
+    # Se alguma distância for menor, a ocorrência não será salva
     for label_measure in unique_label_measures_list:
         label_measure_to_str = str(label_measure)
-
         label_measure_dict = ast.literal_eval(label_measure_to_str)
         euclidean_distance = list(label_measure_dict.values())[0][1]
 
-        if matches_idxs > euclidean_distance:
-            return data_frame_in, 1 # Returns 1 to remove the matches_idxs occurrence, since it was not marked.
+        # Verificar valores nulos antes da comparação
+        if matches_idxs is not None and euclidean_distance is not None:
+            if matches_idxs > euclidean_distance:
+                return data_frame_in, 1  # Retorna 1 para remover a ocorrência de matches_idxs, já que não foi marcada
 
-    # Amount of series that were cleaned after the process (Used to decrement the amount of occurrences of that singular seed)
+    # Contador para séries removidas após o processo (usado para decrementar o número de ocorrências dessa semente)
     removed_series = 0
 
-    # Replace all cells in `data_frame_in` that match any unique dictionary with `'{}'`
+    # Substituir todas as células em `data_frame_in` que correspondam a qualquer dicionário único por `'{}'`
     for label_measure in unique_label_measures_list:
         label_measure_to_str = str(label_measure)
-
-        label_measure_dict = ast.literal_eval(label_measure_to_str)
 
         removed_series += 1
         data_frame_in['label_measures'] = data_frame_in['label_measures'].apply(
             lambda x: '{}' if x == label_measure_to_str else x
         )
 
-    # Extract video number from 'seed_name'
+    # Extrair número do vídeo a partir de 'seed_name'
     match = re.search(r'VD_R_(\d+)', seed_name)
     video_num = int(match.group(1)) if match else seed_name
 
-    # Define the new value as a dictionary and then convert to a string
+    # Definir o novo valor como um dicionário e depois converter para string
     new_label_measure = str({label_name_in: (label_measure_in, matches_idxs, video_num)})
-    
-    # Update rows from `init_lab` to `end_lab` with `new_value` in 'label_measures'
+
+    # Atualizar linhas de `init_lab` a `end_lab` com `new_value` em 'label_measures'
     data_frame_in.loc[init_lab:end_lab, 'label_measures'] = data_frame_in.loc[init_lab:end_lab, 'label_measures'].apply(
         lambda x: str({**ast.literal_eval(x), **ast.literal_eval(new_label_measure)}) if x != '{}' else new_label_measure
     )
 
     return data_frame_in, removed_series
+
 
 def find_close_values(idxs, threshold):
     close_values = []
