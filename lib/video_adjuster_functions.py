@@ -38,6 +38,8 @@ def find_discontinuities_frames(video_feature_rest, N_FRAMES):
     FRAMES_DTFRAME['frame_seq'] = range(0,frame_seq_max+1)
     
     # Fill the collumn fr_exists with 1 in the indexes that the frame_seq number exists
+    FRAMES_DTFRAME = FRAMES_DTFRAME.reindex(FRAMES_DTFRAME.index.union(FRAME_SEQ), fill_value=0)
+    # Fill the collumn fr_exists with 1 in the indexes that the frame_seq number exists
     FRAMES_DTFRAME.loc[FRAME_SEQ, 'fr_exists'] = 1
     
     # Replace NaN values with zeros in 
